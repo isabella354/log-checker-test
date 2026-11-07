@@ -6,11 +6,20 @@ summaries, stores them in SQLite, and flags matches that look unusual against re
 
 ## Setup
 
+Needs Python 3.10+.
+
 ```sh
-python3 -m venv .venv && source .venv/bin/activate
+git clone https://github.com/isabella354/log-checker-test.git
+cd log-checker-test
+python3 -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -e '.[dev,dashboard]'
-cp config.example.yaml config.yaml   # set your team number
+robotlogs check                      # while connected to the robot
 ```
+
+`config.yaml` is committed and already set up for team 3256, so a fresh clone works as-is.
+Re-run `source .venv/bin/activate` in each new terminal before using `robotlogs`.
+Converting `.hoot` files also needs CTRE's `owlet` CLI on your PATH (not a pip package).
 
 Robot code needs `DataLogManager.start()` and `DriverStation.startDataLog(DataLogManager.getLog())`
 so that `DS:enabled` and the `NT:/FMSInfo/*` entries end up in the log.
@@ -29,6 +38,7 @@ Copy the names you need into `signal_map` in `config.yaml`. Missing signals simp
 ## Run
 
 ```sh
+robotlogs check                 # what's on the robot, and why each file would/wouldn't be pulled
 robotlogs watch                 # poll for robot, pull, ingest, print alerts (Ctrl-C to stop)
 robotlogs ingest path/*.wpilog  # ingest files you already have
 robotlogs alerts --last 10      # re-run anomaly checks on recent matches

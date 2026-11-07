@@ -10,7 +10,7 @@ from .config import load_config
 from .db import Database
 from .ingest import pending_local_files, process_log
 from .parse import list_signals
-from .pull import pull_new_logs
+from .pull import diagnose, pull_new_logs
 
 log = logging.getLogger("robotlogs")
 
@@ -76,6 +76,9 @@ def main() -> None:
     s = sub.add_parser("watch", help="poll for the robot, pull new logs, ingest them")
     s.add_argument("--once", action="store_true", help="run one cycle and exit")
     s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("check", help="show what's on the robot and why files would/wouldn't be pulled")
+    s.set_defaults(func=lambda a: diagnose(load_config(a.config), Database(load_config(a.config).db_path)))
 
     s = sub.add_parser("ingest", help="ingest local .wpilog/.hoot files")
     s.add_argument("files", nargs="+")

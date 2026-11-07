@@ -40,6 +40,52 @@ def open_sftp(host: str, user: str, password: str) -> tuple[paramiko.Transport, 
     return transport, paramiko.SFTPClient.from_transport(transport)
 
 
+def diagnose(cfg: Config, db: Database) -> None:
+    """Print everything pull_new_logs would see and decide, without downloading anything."""
+    for host in cfg.robot_hosts:
+        print(f"  {host:<28} {'open' if find_robot([host]) else 'no answer'}")
+    host = find_robot(cfg.robot_hosts)
+    if host is None:
+        print("Robot not reachable on port 22. Check the cable/radio and the team number in config.yaml.")
+        return
+    try:
+        transport, sftp = open_sftp(host, cfg.ssh_user, cfg.ssh_password)
+    except Exception as e:
+        print(f"Reached {host} but SSH login as {cfg.ssh_user!r} failed: {e!r}")
+        return
+    print(f"Logged in to {host} as {cfg.ssh_user}.")
+    try:
+        for d in cfg.remote_log_dirs:
+            try:
+                entries = sorted(sftp.listdir_attr(d), key=lambda a: a.st_mtime or 0)
+            except OSError as e:
+                print(f"\n{d}: cannot list ({e.strerror or e})")
+                continue
+            print(f"\n{d}: {len(entries)} entries")
+            for a in entries:
+                if stat.S_ISDIR(a.st_mode or 0):
+                    why = "directory (not searched)"
+                elif not a.filename.endswith(LOG_EXTENSIONS):
+                    why = "not .wpilog/.hoot"
+                elif db.was_downloaded(a.filename, a.st_size):
+                    why = "already downloaded"
+                else:
+                    why = "NEW"
+                print(f"  {a.st_size / 1e6:>8.2f} MB  {a.filename:<50} {why}")
+        print("\nNote: the newest .wpilog is usually the one being written right now; "
+              "watch skips it until the robot is power-cycled.")
+        print("Other places logs may be:", end=" ")
+        for d in ("/home/lvuser", "/u", "/media"):
+            try:
+                print(f"{d}: {', '.join(sorted(sftp.listdir(d))[:15]) or '(empty)'};", end=" ")
+            except OSError:
+                pass
+        print()
+    finally:
+        sftp.close()
+        transport.close()
+
+
 def pull_new_logs(cfg: Config, db: Database) -> list[Path]:
     host = find_robot(cfg.robot_hosts)
     if host is None:
@@ -51,19 +97,19 @@ def pull_new_logs(cfg: Config, db: Database) -> list[Path]:
     downloaded: list[Path] = []
     try:
         candidates: list[tuple[str, paramiko.SFTPAttributes]] = []
+        total = 0
         for d in cfg.remote_log_dirs:
             try:
                 entries = sftp.listdir_attr(d)
             except OSError:
                 continue  # directory doesn't exist (e.g. no USB stick)
             for a in entries:
-                if (
-                    a.filename.endswith(LOG_EXTENSIONS)
-                    and stat.S_ISREG(a.st_mode or 0)
-                    and not db.was_downloaded(a.filename, a.st_size)
-                ):
-                    candidates.append((d, a))
+                if a.filename.endswith(LOG_EXTENSIONS) and stat.S_ISREG(a.st_mode or 0):
+                    total += 1
+                    if not db.was_downloaded(a.filename, a.st_size):
+                        candidates.append((d, a))
 
+        log.info("found %d log file(s) on robot, %d new", total, len(candidates))
         if not candidates:
             return []
 
