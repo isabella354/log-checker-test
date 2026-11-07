@@ -1,0 +1,51 @@
+# Copy to config.yaml and edit. Relative paths are resolved against this file's directory.
+
+team: 1234                     # used to build roboRIO addresses (USB, 10.TE.AM.2, mDNS)
+# robot_hosts: [172.22.11.2]   # optional: override the address list entirely
+ssh_user: lvuser
+ssh_password: ""
+remote_log_dirs:
+  - /home/lvuser/logs          # DataLogManager default; Phoenix 6 .hoot files often land here too
+  - /u/logs                    # USB stick, if you log there
+
+local_log_dir: ./logs          # downloaded raw logs (kept so you can re-run with a new signal_map)
+db_path: ./robot_trends.db
+poll_interval_s: 10
+settle_s: 2.0                  # re-check file size after this long; a growing file is the active log
+sample_rate_hz: 50             # every signal is resampled onto this grid during the enabled window
+
+# CTRE owlet command used to convert .hoot -> .wpilog. {input}/{output} are substituted.
+# Check `owlet --help` for your version's exact flags; some signals need Phoenix Pro to export.
+owlet_cmd: ["owlet", "{input}", "{output}", "-f", "wpilog"]
+
+# Signal names come from YOUR robot code. Run `robotlogs signals <file.wpilog>` to list what's in a log.
+signal_map:
+  enabled: "DS:enabled"                       # from DriverStation.startDataLog()
+  system_time: "systemTime"                   # DataLogManager logs wall clock once it's valid
+  event_name: "NT:/FMSInfo/EventName"
+  match_type: "NT:/FMSInfo/MatchType"
+  match_number: "NT:/FMSInfo/MatchNumber"
+  battery_id: "NT:/SmartDashboard/BatteryID"  # e.g. a SendableChooser/string the drive team sets
+  battery_voltage: "/SystemStats/BatteryVoltage"
+  total_current: "/PowerDistribution/TotalCurrent"   # omit to sum the motor supply currents instead
+  brownout: "/SystemStats/BrownedOut"                # boolean; omit if you don't log it
+  motors:
+    arm_left:
+      supply: "/Arm/Left/SupplyCurrent"
+      stator: "/Arm/Left/StatorCurrent"
+      temp: "/Arm/Left/Temp"
+    drive_fl:
+      supply: "/Drive/FL/SupplyCurrent"
+      stator: "/Drive/FL/StatorCurrent"
+      temp: "/Drive/FL/Temp"
+
+thresholds:
+  low_voltage: 8.0
+  critical_voltage: 7.0
+  hot_motor_c: 70
+
+alerts:
+  history_matches: 20          # rolling window for baselines
+  min_history: 5               # don't alert until we have this many prior matches
+  z_threshold: 2.0
+  wear_slope_per_match: 0.02   # flag avg stator current rising >2% of its mean per match
