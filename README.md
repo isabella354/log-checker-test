@@ -63,3 +63,21 @@ copied off a USB stick) is processed on the next `watch` cycle.
 - **Driver Station `.dslog`** parsing isn't implemented. It's a good fallback source for voltage,
   brownouts and CAN utilization.
 - **Retention.** Raw logs are kept in `logs/` forever, so add a cleanup policy once the summaries look right.
+
+HOW TO USE: 
+Any connection that puts the laptop on the robot's network works. You don't need to plug into a specific device.
+
+Plug in using Ethernet to robot radio works, USB cable to roboRIO should also work (at comp because no wifi)
+
+How you'd use it
+
+It's a terminal command, not an app you double-click.
+
+Once: set your team number in config.yaml and fill in your signal names.
+At the start of the day: open a terminal and run robotlogs watch, then leave it running.
+During the event: do nothing. Each time the laptop is tethered to the robot, it notices within about 10 seconds and pulls any new logs. When you unplug, it waits for the next connection.
+You don't have to start it at the right moment. It keeps polling in the background, so connecting and disconnecting is all it needs.
+
+The current log won't be pulled yet. The robot writes one log file per power-on, and the code skips any file that's still being written, so it won't grab the log for the session that's currently running. A match's log becomes available after the robot is power-cycled, which normally happens anyway when you swap batteries in the pits. So the usual flow is: play the match, return to the pits, swap the battery and power on, tether, and the previous match's log comes over.
+
+The simplest setup is to run it on the Driver Station laptop, since that laptop is already tethered to the robot whenever you're working on it in the pits.
