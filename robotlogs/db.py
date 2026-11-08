@@ -13,6 +13,13 @@ CREATE TABLE IF NOT EXISTS downloads (
   PRIMARY KEY (remote_name, remote_size)
 );
 
+CREATE TABLE IF NOT EXISTS skipped (
+  sha256     TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  reason     TEXT,
+  skipped_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS logs (
   id                INTEGER PRIMARY KEY,
   file_name         TEXT NOT NULL,
@@ -24,6 +31,7 @@ CREATE TABLE IF NOT EXISTS logs (
   match_number      INTEGER,
   battery_id        TEXT,
   enabled_s         REAL,
+  enable_drops      INTEGER,
   start_voltage     REAL,
   min_voltage       REAL,
   avg_voltage       REAL,
@@ -53,7 +61,7 @@ CREATE TABLE IF NOT EXISTS motor_stats (
 """
 
 LOG_METRICS = [
-    "enabled_s", "start_voltage", "min_voltage", "avg_voltage", "time_below_low_v",
+    "enabled_s", "enable_drops", "start_voltage", "min_voltage", "avg_voltage", "time_below_low_v",
     "time_below_crit_v", "brownouts", "peak_current", "avg_current", "energy_wh",
     "avg_power_w", "peak_power_w", "sag_ohms",
 ]
@@ -99,7 +107,14 @@ class Database:
             )
 
     def is_ingested(self, sha256: str) -> bool:
-        return self.conn.execute("SELECT 1 FROM logs WHERE sha256=?", (sha256,)).fetchone() is not None
+        """True if already in logs, or previously skipped (e.g. robot never enabled)."""
+        return self.conn.execute(
+            "SELECT 1 FROM logs WHERE sha256=? UNION SELECT 1 FROM skipped WHERE sha256=?", (sha256, sha256)
+        ).fetchone() is not None
+
+    def mark_skipped(self, name: str, sha256: str, reason: str) -> None:
+        with self.conn:
+            self.conn.execute("INSERT OR IGNORE INTO skipped VALUES (?, ?, ?, ?)", (sha256, name, reason, _now()))
 
     # ---- writes ----
     def insert_log(self, file_name: str, sha256: str, info: dict, summary: dict, motors: list[dict]) -> int:

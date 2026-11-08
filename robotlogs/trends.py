@@ -25,6 +25,7 @@ LOG_TRENDS = [
     ("sag_ohms", "Voltage sag per amp", "Ω", True),
     ("time_below_low_v", "Time below low-voltage", "s", True),
     ("brownouts", "Brownouts", "", True),
+    ("enable_drops", "Mid-match disables", "", True),
 ]
 MOTOR_TRENDS = [
     ("avg_supply", "avg supply current", "A", True),

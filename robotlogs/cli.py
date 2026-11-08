@@ -8,23 +8,30 @@ from pathlib import Path
 from .alerts import check_anomalies
 from .config import load_config
 from .db import Database
-from .ingest import pending_local_files, process_log
+from .ingest import as_session, pending_sessions, process_session
 from .parse import list_signals
 from .pull import diagnose, pull_new_logs
 
 log = logging.getLogger("robotlogs")
 
 
-def _ingest_and_alert(paths, cfg, db) -> None:
-    for path in paths:
+_failed: set[str] = set()  # sessions that errored this run; don't retry (and re-log) every cycle
+
+
+def _ingest_and_alert(sessions, cfg, db) -> None:
+    for session in sessions:
+        if session.name in _failed:
+            continue
         try:
-            log_id = process_log(path, cfg, db)
-        except Exception:
-            log.exception("failed to process %s", path.name)
+            log_id = process_session(session, cfg, db)
+        except Exception as e:
+            _failed.add(session.name)
+            log.error("failed to process %s: %s", session.name, e)
+            log.debug("details", exc_info=True)
             continue
         if log_id is not None:
             for msg in check_anomalies(db, log_id, cfg):
-                log.warning("⚠ %s: %s", path.name, msg)
+                log.warning("⚠ %s: %s", session.name, msg)
 
 
 def cmd_watch(args) -> None:
@@ -38,7 +45,7 @@ def cmd_watch(args) -> None:
             log.exception("pull failed; will retry")
         # Always (re)process the local queue, so anything pulled earlier, or copied in by hand
         # from a USB stick, gets ingested even when the robot isn't connected.
-        _ingest_and_alert(pending_local_files(cfg), cfg, db)
+        _ingest_and_alert(pending_sessions(cfg), cfg, db)
         if args.once:
             return
         time.sleep(cfg.poll_interval_s)
@@ -47,7 +54,7 @@ def cmd_watch(args) -> None:
 def cmd_ingest(args) -> None:
     cfg = load_config(args.config)
     db = Database(cfg.db_path)
-    _ingest_and_alert([Path(p) for p in args.files], cfg, db)
+    _ingest_and_alert([as_session(Path(p)) for p in args.files], cfg, db)
 
 
 def cmd_signals(args) -> None:
@@ -97,7 +104,7 @@ def main() -> None:
     s = sub.add_parser("check", help="show what's on the robot and why files would/wouldn't be pulled")
     s.set_defaults(func=lambda a: diagnose(load_config(a.config), Database(load_config(a.config).db_path)))
 
-    s = sub.add_parser("ingest", help="ingest local .wpilog/.hoot files")
+    s = sub.add_parser("ingest", help="ingest local .wpilog/.hoot files, or session folders of .hoot files")
     s.add_argument("files", nargs="+")
     s.set_defaults(func=cmd_ingest)
 

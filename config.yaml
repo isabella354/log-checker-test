@@ -1,18 +1,19 @@
 # Team robotlogs config. Committed to git, so everyone who clones gets the same settings.
 # If you change it, commit and push so the rest of the team stays in sync.
 #
-# Set up for Team3256/FRC_Offseason_2026, which logs with AdvantageKit (WPILOGWriter).
-# Signal names below come from that code: Logger.processInputs("<Table>", inputs) logs each
-# input field as "/<Table>/<FieldName>" with the first letter capitalized.
-# If the robot code renames a subsystem or field, update the matching name here.
+# Set up for Team3256/FRC_Offseason_2026. Data comes from CTRE SignalLogger .hoot files
+# (the same logs Phoenix Tuner extracts): one folder per robot power-on in /home/lvuser/logs,
+# CTRE names match folders like "mttd_Q12", and each folder has one .hoot per CAN bus:
+#   rio_<time>.hoot       roboRIO CAN bus (mechanisms)        -> signals named "rio/..."
+#   <serial>_<time>.hoot  CANivore "main" (drivetrain)        -> signals named "canivore/..."
+# If a motor's CAN ID changes in the robot code, update it here.
 
 team: 3256                   # used to build roboRIO addresses (USB, 10.TE.AM.2, mDNS)
 # robot_hosts: [172.22.11.2]   # optional: override the address list entirely
 ssh_user: lvuser
 ssh_password: ""
 remote_log_dirs:
-  - /U/wpilogs                 # Robot.java when Constants.Logging.kLogToUSB = true (current setting; needs a FAT32 USB stick)
-  - /home/lvuser/wpilogs       # Robot.java when kLogToUSB = false
+  - /home/lvuser/logs          # CTRE SignalLogger .hoot files (session subfolders are searched too)
 
 local_log_dir: ./logs          # downloaded raw logs (kept so you can re-run with a new signal_map)
 db_path: ./robot_trends.db
@@ -20,87 +21,105 @@ poll_interval_s: 10
 settle_s: 2.0                  # re-check file size after this long; a growing file is the active log
 sample_rate_hz: 50             # every signal is resampled onto this grid during the enabled window
 
-# CTRE owlet command used to convert .hoot -> .wpilog. {input}/{output} are substituted.
-# Not used right now: the folders above only contain AdvantageKit .wpilog files.
-owlet_cmd: ["owlet", "{input}", "{output}", "-f", "wpilog"]
+# .hoot files are converted with CTRE's owlet, using the version that matches each file.
+# AdvantageScope downloads these automatically (open any .hoot from the robot in it once).
+# Its download folder is searched by default; add other folders here if needed.
+owlet_dirs: []
+owlet_args: ["-f", "wpilog"]
 
 # ---------------------------------------------------------------------------
-# signal_map: a translation table from "what this tool wants" to "what our robot
-# code calls it in the log". The tool only reads the signals listed here.
+# signal_map: a translation table from "what this tool wants" to "what the
+# log calls it". The tool only reads the signals listed here.
 # A name that doesn't exist in the log just gives an empty metric, not an error.
-# To see the real names: robotlogs signals logs/<some file>.wpilog
-# "Name[2]" means element 2 of an array signal (used for the 4 shooter motors).
 # ---------------------------------------------------------------------------
 signal_map:
-  # Logged automatically by AdvantageKit (LoggedDriverStation / LoggedSystemStats)
-  enabled: "/DriverStation/Enabled"
-  system_time: "/SystemStats/EpochTimeMicros"
-  event_name: "/DriverStation/EventName"
-  match_type: "/DriverStation/MatchType"
-  match_number: "/DriverStation/MatchNumber"
-  battery_voltage: "/SystemStats/BatteryVoltage"
-  brownout: "/SystemStats/BrownedOut"
+  enabled: "rio/RobotEnable"
+  # These are written by Robot.driverStationConnected(), but usually before the field sends
+  # match info, so they come out blank. The event/match are then read from CTRE's folder name.
+  event_name: "rio/EventName"
+  match_type: "rio/MatchType"
+  match_number: "rio/MatchNumber"
+  system_time: null              # hoot files have no wall clock; the start time comes from the file name
 
-  # Only exists once the robot code calls LoggedPowerDistribution.getInstance(...) before
-  # Logger.start(). Until then, total current = sum of the motor supply currents below
-  # (which leaves out the drivetrain, so power numbers will read low).
-  total_current: "/PowerDistribution/TotalCurrent"
+  # No PDH in the logs, so battery voltage = average supply voltage measured at the four drive
+  # motors (reads a little below the true battery voltage under heavy load, because of wiring).
+  battery_voltage:
+    - "canivore/TalonFX-4/SupplyVoltage"
+    - "canivore/TalonFX-0/SupplyVoltage"
+    - "canivore/TalonFX-6/SupplyVoltage"
+    - "canivore/TalonFX-2/SupplyVoltage"
+  # Not logged; total current = sum of all motor supply currents below (every TalonFX on the robot).
+  total_current: null
+  brownout: null
+  battery_id: null
 
-  # battery_id: not published by the robot code yet. To track batteries, publish a string
-  # (e.g. a dashboard dropdown) and put its log name here.
-
-  # One block per motor. Names on the left are what the dashboard shows.
-  # Drivetrain motors aren't logged through AdvantageKit, so they can't be listed here yet.
+  # Temperature isn't available: CTRE only exports it for Phoenix Pro-licensed devices.
   motors:
-    shooter_1:
-      supply: "/Shooter/ShooterMotorSupplyCurrents[0]"
-      stator: "/Shooter/ShooterMotorStatorCurrents[0]"
-      temp: "/Shooter/ShooterMotorTemperatures[0]"
-    shooter_2:
-      supply: "/Shooter/ShooterMotorSupplyCurrents[1]"
-      stator: "/Shooter/ShooterMotorStatorCurrents[1]"
-      temp: "/Shooter/ShooterMotorTemperatures[1]"
-    shooter_3:
-      supply: "/Shooter/ShooterMotorSupplyCurrents[2]"
-      stator: "/Shooter/ShooterMotorStatorCurrents[2]"
-      temp: "/Shooter/ShooterMotorTemperatures[2]"
-    shooter_4:
-      supply: "/Shooter/ShooterMotorSupplyCurrents[3]"
-      stator: "/Shooter/ShooterMotorStatorCurrents[3]"
-      temp: "/Shooter/ShooterMotorTemperatures[3]"
-    shooter_pivot:                 # no temperature logged
-      supply: "/ShooterPivot/ShooterPivotMotorSupplyCurrent"
-      stator: "/ShooterPivot/ShooterPivotMotorStatorCurrent"
+    # Drivetrain (CANivore). IDs from swerve/generated/TunerConstants.java
+    drive_fl:
+      supply: "canivore/TalonFX-4/SupplyCurrent"
+      stator: "canivore/TalonFX-4/StatorCurrent"
+    drive_fr:
+      supply: "canivore/TalonFX-0/SupplyCurrent"
+      stator: "canivore/TalonFX-0/StatorCurrent"
+    drive_bl:
+      supply: "canivore/TalonFX-6/SupplyCurrent"
+      stator: "canivore/TalonFX-6/StatorCurrent"
+    drive_br:
+      supply: "canivore/TalonFX-2/SupplyCurrent"
+      stator: "canivore/TalonFX-2/StatorCurrent"
+    steer_fl:
+      supply: "canivore/TalonFX-5/SupplyCurrent"
+      stator: "canivore/TalonFX-5/StatorCurrent"
+    steer_fr:
+      supply: "canivore/TalonFX-3/SupplyCurrent"
+      stator: "canivore/TalonFX-3/StatorCurrent"
+    steer_bl:
+      supply: "canivore/TalonFX-7/SupplyCurrent"
+      stator: "canivore/TalonFX-7/StatorCurrent"
+    steer_br:
+      supply: "canivore/TalonFX-1/SupplyCurrent"
+      stator: "canivore/TalonFX-1/StatorCurrent"
+    # Mechanisms (roboRIO CAN bus). IDs from each subsystem's *Constants.java
+    shooter_top_left:
+      supply: "rio/TalonFX-44/SupplyCurrent"
+      stator: "rio/TalonFX-44/StatorCurrent"
+    shooter_bottom_left:
+      supply: "rio/TalonFX-45/SupplyCurrent"
+      stator: "rio/TalonFX-45/StatorCurrent"
+    shooter_top_right:
+      supply: "rio/TalonFX-42/SupplyCurrent"
+      stator: "rio/TalonFX-42/StatorCurrent"
+    shooter_bottom_right:
+      supply: "rio/TalonFX-41/SupplyCurrent"
+      stator: "rio/TalonFX-41/StatorCurrent"
+    shooter_pivot:
+      supply: "rio/TalonFX-51/SupplyCurrent"
+      stator: "rio/TalonFX-51/StatorCurrent"
     feeder_left:
-      supply: "/feeder/FeederMotorLeftSupplyCurrent"
-      stator: "/feeder/FeederMotorLeftStatorCurrent"
-      temp: "/feeder/FeederMotorLeftTemperature"
+      supply: "rio/TalonFX-47/SupplyCurrent"
+      stator: "rio/TalonFX-47/StatorCurrent"
     feeder_right:
-      supply: "/feeder/FeederMotorRightSupplyCurrent"
-      stator: "/feeder/FeederMotorRightStatorCurrent"
-      temp: "/feeder/FeederMotorRightTemperature"
+      supply: "rio/TalonFX-43/SupplyCurrent"
+      stator: "rio/TalonFX-43/StatorCurrent"
     indexer_left:
-      supply: "/indexer/IndexerSupplyCurrentLeft"
-      stator: "/indexer/IndexerStatorCurrentLeft"
-      temp: "/indexer/IndexerTemperatureLeft"
+      supply: "rio/TalonFX-46/SupplyCurrent"
+      stator: "rio/TalonFX-46/StatorCurrent"
     indexer_right:
-      supply: "/indexer/IndexerSupplyCurrentRight"
-      stator: "/indexer/IndexerStatorCurrentRight"
-      temp: "/indexer/IndexerTemperatureRight"
+      supply: "rio/TalonFX-27/SupplyCurrent"
+      stator: "rio/TalonFX-27/StatorCurrent"
     intake_left:
-      supply: "/IntakeRollers/RollerSupplyCurrentLeft"
-      stator: "/IntakeRollers/RollerStatorCurrentLeft"
-      temp: "/IntakeRollers/RollerTemperatureLeft"
+      supply: "rio/TalonFX-19/SupplyCurrent"
+      stator: "rio/TalonFX-19/StatorCurrent"
     intake_right:
-      supply: "/IntakeRollers/RollerSupplyCurrentRight"
-      stator: "/IntakeRollers/RollerStatorCurrentRight"
-      temp: "/IntakeRollers/RollerTemperatureRight"
-    slide_left:                    # no temperature logged
-      supply: "/LinearSlide/LeftMotorSupplyCurrent"
-      stator: "/LinearSlide/LeftMotorStatorCurrent"
+      supply: "rio/TalonFX-28/SupplyCurrent"
+      stator: "rio/TalonFX-28/StatorCurrent"
+    slide_left:
+      supply: "rio/TalonFX-40/SupplyCurrent"
+      stator: "rio/TalonFX-40/StatorCurrent"
     slide_right:
-      supply: "/LinearSlide/RightMotorSupplyCurrent"
-      stator: "/LinearSlide/RightMotorStatorCurrent"
+      supply: "rio/TalonFX-39/SupplyCurrent"
+      stator: "rio/TalonFX-39/StatorCurrent"
 
 # Defaults are fine; tweak later if alerts are too noisy or too quiet.
 thresholds:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,7 +23,7 @@ class SignalMap:
     match_type: str | None = "NT:/FMSInfo/MatchType"
     match_number: str | None = "NT:/FMSInfo/MatchNumber"
     battery_id: str | None = None
-    battery_voltage: str | None = None
+    battery_voltage: str | list[str] | None = None  # a list is averaged
     total_current: str | None = None
     brownout: str | None = None
     motors: dict[str, MotorSignals] = field(default_factory=dict)
@@ -29,13 +31,17 @@ class SignalMap:
     def all_names(self) -> set[str]:
         names = {
             self.enabled, self.system_time, self.event_name, self.match_type,
-            self.match_number, self.battery_id, self.battery_voltage,
-            self.total_current, self.brownout,
+            self.match_number, self.battery_id, self.total_current, self.brownout,
         }
+        names |= set(self.battery_voltages())
         for m in self.motors.values():
             names |= {m.supply, m.stator, m.temp}
         names.discard(None)
         return names
+
+    def battery_voltages(self) -> list[str]:
+        bv = self.battery_voltage
+        return [] if not bv else [bv] if isinstance(bv, str) else list(bv)
 
 
 @dataclass
@@ -64,10 +70,24 @@ class Config:
     poll_interval_s: float
     settle_s: float
     sample_rate_hz: float
-    owlet_cmd: list[str]
+    owlet_dirs: list[Path]   # folders holding owlet-<ver>-C<n> binaries; matched to each hoot file
+    owlet_args: list[str]
     signal_map: SignalMap
     thresholds: Thresholds
     alerts: AlertConfig
+
+
+def default_owlet_dirs() -> list[Path]:
+    """Where AdvantageScope keeps the owlet versions it downloads (it fetches the right one the
+    first time you open a .hoot file in it)."""
+    home = Path.home()
+    if sys.platform == "darwin":
+        base = home / "Library/Application Support"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", home / "AppData/Roaming"))
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
+    return [base / "AdvantageScope" / "owlet"]
 
 
 def team_hosts(team: int) -> list[str]:
@@ -103,7 +123,9 @@ def load_config(path: str | Path) -> Config:
         poll_interval_s=float(raw.get("poll_interval_s", 10)),
         settle_s=float(raw.get("settle_s", 2.0)),
         sample_rate_hz=float(raw.get("sample_rate_hz", 50)),
-        owlet_cmd=list(raw.get("owlet_cmd", ["owlet", "{input}", "{output}", "-f", "wpilog"])),
+        owlet_dirs=[(base / Path(d).expanduser()).resolve() for d in raw.get("owlet_dirs") or []]
+        + default_owlet_dirs(),
+        owlet_args=list(raw.get("owlet_args", ["-f", "wpilog"])),
         signal_map=SignalMap(**sm_raw, motors=motors),
         thresholds=Thresholds(**(raw.get("thresholds") or {})),
         alerts=AlertConfig(**(raw.get("alerts") or {})),

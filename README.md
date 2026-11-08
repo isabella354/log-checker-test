@@ -21,19 +21,31 @@ robotlogs check                      # while connected to the robot
 Re-run `source .venv/bin/activate` in each new terminal before using `robotlogs`.
 Converting `.hoot` files also needs CTRE's `owlet` CLI on your PATH (not a pip package).
 
-`config.yaml` is set up for our robot code ([Team3256/FRC_Offseason_2026](https://github.com/Team3256/FRC_Offseason_2026)),
-which logs with AdvantageKit to `/U/wpilogs` on a USB stick in the roboRIO (`Constants.Logging.kLogToUSB = true`),
-or `/home/lvuser/wpilogs` if that flag is false. **No USB stick in the roboRIO = no logs.**
+`config.yaml` is set up for our robot code ([Team3256/FRC_Offseason_2026](https://github.com/Team3256/FRC_Offseason_2026)).
+The data comes from CTRE's `.hoot` logs, the same files Phoenix Tuner extracts. They're in
+`/home/lvuser/logs` on the roboRIO, in one folder per robot power-on, and CTRE names match
+folders like `mttd_Q12`. Each folder has one `.hoot` per CAN bus (roboRIO bus and CANivore),
+and the tool combines them into one match.
+
+**Converting `.hoot` files needs AdvantageScope.** The tool uses CTRE's `owlet` converter, in the
+exact version that matches the log. AdvantageScope downloads the right version the first time you
+open a `.hoot` file in it. So on each laptop that runs this tool: install AdvantageScope, then open
+one `.hoot` file from the robot in it once.
+
+What the `.hoot` logs give us: supply and stator current for all 21 motors (drivetrain included),
+battery voltage (measured at the drive motors), and when the robot was enabled.
+What they don't: motor temperatures (CTRE only exports those for Phoenix Pro devices), brownouts,
+and battery ID.
 
 ### Robot-code changes that would make the numbers better
 
-1. **Log the PDH.** Add `LoggedPowerDistribution.getInstance(1, ModuleType.kRev);` in `Robot.configureAdvantageKit()`
-   before `Logger.start()`. Without it, "total current" and power only add up the motors listed in
-   `config.yaml`, which leaves out the drivetrain, usually the biggest draw.
-2. **Log drivetrain motor currents/temps** through AdvantageKit (right now the swerve modules only go to CTRE
-   SignalLogger `.hoot` files). Then add them under `motors:` in `config.yaml`.
-3. **Publish a battery ID** (e.g. a dashboard dropdown, logged with `Logger.recordOutput("BatteryID", ...)`) and
-   set `battery_id: "/RealOutputs/BatteryID"` in `config.yaml` to enable per-battery tracking.
+1. **Match info is logged too early.** `Robot.driverStationConnected()` writes `MatchType`/`MatchNumber`/
+   `EventName` before the field has sent them, so they come out blank. Also writing them in
+   `autonomousInit()` fixes it. Until then, the tool reads the event and match from CTRE's folder name.
+2. **AdvantageKit isn't saving anything.** It's set to write to a USB stick (`kLogToUSB = true`), but no
+   stick is plugged into the roboRIO. Either plug in a FAT32 stick or set `kLogToUSB = false`.
+3. **Battery ID**: publish a battery name (e.g. a dashboard dropdown) and log it, then set `battery_id`
+   in `config.yaml`, to enable per-battery tracking.
 
 ## Map your signals
 
@@ -130,7 +142,10 @@ The Driver Station laptop is the best choice, since it's already plugged into th
    ```
    If you already cloned it earlier, run `git pull` inside the folder instead of `git clone`,
    to get the latest version and config.
-3. Test it. Connect the laptop to the robot (see step 2), turn the robot on, wait about
+3. Install [AdvantageScope](https://github.com/Mechanical-Advantage/AdvantageScope/releases), open it,
+   and open one `.hoot` file from the robot in it (ask the programming lead for one, or download one
+   with Phoenix Tuner). This downloads the converter the tool needs.
+4. Test it. Connect the laptop to the robot (see step 2), turn the robot on, wait about
    30 seconds for it to boot, then run:
    ```sh
    robotlogs check
@@ -197,7 +212,9 @@ For a quick text summary instead:
 | `robotlogs: command not found` | You forgot `source .venv/bin/activate` in this terminal. |
 | Nothing at all prints after `watching for robot at ...` | Robot isn't reachable. Check the cable, check the robot is on, wait 30 s after power-on for it to boot. |
 | `found 1 log file(s) on robot, 1 new` then `skipping ... (still being written)` | Normal. That's the current session. Power-cycle the robot and it'll come over. |
-| `found 0 log file(s)` | Is there a USB stick in the roboRIO? Our robot code saves logs to it. If there is, run `robotlogs check` and send the output to the programming lead. |
+| `found 0 log file(s)` | Run `robotlogs check` and send the output to the programming lead. |
+| `needs owlet C19, have C[...]` or `No CTRE owlet converter found` | Open AdvantageScope, then open any `.hoot` file from the robot in it (File → Open, or drag it in). That downloads the matching converter. Then restart `robotlogs watch`. |
+| `skipped ...: robot enabled for only 0s` | Normal. That power-on was never enabled (pit testing), so it isn't a match. |
 | `SSH login ... failed` | Rare. Unplug and replug the cable, or power-cycle the robot. If it keeps happening, send the `robotlogs check` output to the programming lead. |
 | `ingested ...` but numbers in the dashboard are blank | The signal names in `config.yaml` don't match the robot code yet. Not an emergency: the raw logs are saved in `logs/`, and they can be re-processed later once the names are fixed. |
 | Error mentioning `owlet` | That's a `.hoot` (CTRE motor) file and the CTRE converter isn't installed. Safe to ignore; the `.wpilog` files still work. |

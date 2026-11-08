@@ -167,51 +167,77 @@ def test_dashboard_renders(env, monkeypatch):
     assert any("CASJ Q8" in m.value for m in at.subheader)
 
 
-def test_team_config_reads_advantagekit_log(tmp_path):
-    """Write a log shaped like Team3256's AdvantageKit output and ingest it with the real config.yaml."""
+def test_team_config_reads_ctre_session(tmp_path, monkeypatch):
+    """A CTRE session folder (one .hoot per CAN bus) ingested with the real config.yaml.
+    owlet is stubbed out: the fake .hoot files already contain wpilog data in owlet's naming."""
     import shutil
+
+    import robotlogs.parse as parse
+    from robotlogs.metrics import count_enable_drops
 
     repo = Path(__file__).resolve().parent.parent
     shutil.copy(repo / "config.yaml", tmp_path / "config.yaml")
     cfg = load_config(tmp_path / "config.yaml")
-    cfg.local_log_dir.mkdir()
     db = Database(cfg.db_path)
 
-    p = cfg.local_log_dir / "akit_26-03-07_18-30-12_casj_q14.wpilog"
-    w = WpilogWriter(p)
-    w.append("/SystemStats/EpochTimeMicros", "int64", 0.5, 0)  # clock not valid yet
-    w.append("/SystemStats/EpochTimeMicros", "int64", 2.0, int(1_772_900_000 * 1e6))
-    w.append("/DriverStation/EventName", "string", 1.0, "CASJ")
-    w.append("/DriverStation/MatchType", "int64", 1.0, 2)
-    w.append("/DriverStation/MatchNumber", "int64", 1.0, 14)
-    w.append("/DriverStation/Enabled", "boolean", 0.0, False)
-    w.append("/DriverStation/Enabled", "boolean", 5.0, True)
-    w.append("/DriverStation/Enabled", "boolean", 25.0, False)
-    w.append("/SystemStats/BrownedOut", "boolean", 0.0, False)
-    for t in np.arange(0, 30, 0.02):
-        on = 5 <= t < 25
-        w.append("/SystemStats/BatteryVoltage", "double", t, 11.0 if on else 12.5)
-        w.append("/Shooter/ShooterMotorSupplyCurrents", "double[]", t, [20.0, 21.0, 22.0, 23.0] if on else [0.0] * 4)
-        w.append("/Shooter/ShooterMotorStatorCurrents", "double[]", t, [30.0, 31.0, 32.0, 33.0] if on else [0.0] * 4)
-        w.append("/Shooter/ShooterMotorTemperatures", "double[]", t, [40.0, 41.0, 42.0, 43.0])
-        w.append("/feeder/FeederMotorLeftSupplyCurrent", "double", t, 5.0 if on else 0.0)
-        w.append("/feeder/FeederMotorLeftStatorCurrent", "double", t, 15.0 if on else 0.0)
-        w.append("/LinearSlide/LeftMotorStatorCurrent", "double", t, 8.0 if on else 0.0)
-    w.close()
+    def fake_convert(path, out_dir, owlet_dirs, owlet_args):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / (path.stem + ".wpilog")
+        shutil.copy(path, out)
+        return out
+    monkeypatch.setattr(parse, "convert_hoot", fake_convert)
 
-    log_id = process_log(p, cfg, db)
+    sess = cfg.local_log_dir / "mttd_Q12"
+    sess.mkdir(parents=True)
+    rio = WpilogWriter(sess / "mttd_Q12_rio_2026-11-07_18-07-16.hoot")
+    can = WpilogWriter(sess / "mttd_Q12_138A862350374E53202020472B3810FF_2026-11-07_18-07-16.hoot")
+    rio.append("MatchType", "string", 1.0, "None")      # what our robot code actually logs
+    rio.append("MatchNumber", "string", 1.0, "0")
+    rio.append("EventName", "string", 1.0, "")
+    # enabled 10-30 s, with a 0.2 s blip at 20 s (counts as a drop)
+    for t, on in [(0, False), (10, True), (20, False), (20.2, True), (30, False)]:
+        rio.append("RobotEnable", "boolean", t, on)
+    for t in np.arange(0, 35, 0.02):
+        on = 10 <= t < 30
+        rio.append("Phoenix6/TalonFX-44/SupplyCurrent", "double", t, 10.0 if on else 0.0)
+        rio.append("Phoenix6/TalonFX-44/StatorCurrent", "double", t, 20.0 if on else 0.0)
+        # TalonFX-0 exists on both buses on our robot; it must not collide
+        rio.append("Phoenix6/TalonFX-0/SupplyCurrent", "double", t, 999.0)
+        can.append("Phoenix6/TalonFX-0/SupplyCurrent", "double", t, 30.0 if on else 0.0)
+        can.append("Phoenix6/TalonFX-0/StatorCurrent", "double", t, 45.0 if on else 0.0)
+        for cid in (4, 0, 6, 2):
+            can.append(f"Phoenix6/TalonFX-{cid}/SupplyVoltage", "double", t, 11.0 if on else 12.6)
+    rio.close()
+    can.close()
+
+    log_id = process_log(sess, cfg, db)
     row = db.log_row(log_id)
-    assert (row["event"], row["match_type"], row["match_number"]) == ("CASJ", "qualification", 14)
-    assert row["started_at"].startswith("2026-03-07")
-    assert row["enabled_s"] == pytest.approx(20.0, abs=0.05)
+    assert (row["event"], row["match_type"], row["match_number"]) == ("MTTD", "qualification", 12)
+    assert row["started_at"] == "2026-11-07T18:07:16+00:00"
+    assert row["enabled_s"] == pytest.approx(19.8, abs=0.05)
+    assert row["enable_drops"] == 1
+    assert row["start_voltage"] == pytest.approx(12.6)
     assert row["min_voltage"] == pytest.approx(11.0)
-    # no PowerDistribution logged -> total current = sum of tracked supply currents
-    assert row["avg_current"] == pytest.approx(20 + 21 + 22 + 23 + 5)
+    assert row["avg_current"] == pytest.approx(10 + 30)  # sum of motor supplies, rio TalonFX-0 not mixed in
 
     motors = {r["motor"]: r for r in db.conn.execute("SELECT * FROM motor_stats WHERE log_id=?", (log_id,))}
-    assert motors["shooter_3"]["avg_supply"] == pytest.approx(22.0)
-    assert motors["shooter_3"]["avg_stator"] == pytest.approx(32.0)
-    assert motors["shooter_4"]["peak_temp"] == pytest.approx(43.0)
-    assert motors["feeder_left"]["stator_supply_ratio"] == pytest.approx(3.0)
-    assert motors["slide_left"]["avg_stator"] == pytest.approx(8.0)
-    assert "indexer_left" not in motors  # not in this log -> skipped, not an error
+    assert motors["drive_fr"]["avg_stator"] == pytest.approx(45.0)        # canivore/TalonFX-0
+    assert motors["shooter_top_left"]["stator_supply_ratio"] == pytest.approx(2.0)
+    assert not (cfg.local_log_dir / ".converted").exists() or not any((cfg.local_log_dir / ".converted").iterdir())
+    assert process_log(sess, cfg, db) is None  # dedupe
+
+    assert count_enable_drops([(0, 20), (23, 30)]) == 0  # normal auto -> teleop gap
+    assert count_enable_drops([(0, 20), (20.2, 30)]) == 1
+
+
+def test_never_enabled_session_is_skipped_once(env):
+    cfg, db = env
+    p = cfg.local_log_dir / "bench.wpilog"
+    w = WpilogWriter(p)
+    w.append("DS:enabled", "boolean", 0.0, False)
+    w.append("/Batt/V", "double", 0.0, 12.5)
+    w.append("/Batt/V", "double", 60.0, 12.5)
+    w.close()
+    assert process_log(p, cfg, db) is None
+    assert db.conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0] == 0
+    assert db.is_ingested(__import__("robotlogs.ingest", fromlist=["x"]).sha256_of(p))

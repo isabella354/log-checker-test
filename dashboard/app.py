@@ -83,7 +83,7 @@ logs["n"] = logs.index + 1  # play order within the current filter
 logs["match"] = logs.apply(match_label, axis=1)
 motors = motors.merge(logs[["id", "n", "match"]], left_on="log_id", right_on="id", suffixes=("", "_l"))
 
-st.caption(f"{len(logs)} matches. In every chart, each dot is one match and the line is the "
+st.caption(f"{len(logs)} match{'es' if len(logs) != 1 else ''}. In every chart, each dot is one match and the line is the "
            f"{ROLL}-match rolling average. Hover for exact values.")
 
 
@@ -183,6 +183,7 @@ with tab_overview:
         ("Starting voltage", "start_voltage", "V", "normal"),
         ("Minimum voltage", "min_voltage", "V", "normal"),
         ("Sag per amp", "sag_ohms", "Ω", "inverse"),
+        ("Mid-match disables", "enable_drops", "", "inverse"),
     ]
     for col, (label, key, unit, good) in zip(st.columns(len(tiles)), tiles):
         v = last.get(key)
@@ -204,12 +205,17 @@ with tab_overview:
         st.caption("*Needs at least 4 matches with data.*")
 
     st.subheader("By event")
+
+    def total(col):  # sum, but blank (not 0) when the signal was never logged
+        return col.sum(min_count=1)
+
     by_event = (logs.assign(event=logs.event.fillna("(unknown)"))
                 .groupby("event", sort=False)
                 .agg(matches=("id", "count"), first=("started_at", "min"),
-                     total_energy_wh=("energy_wh", "sum"), avg_energy_wh=("energy_wh", "mean"),
+                     total_energy_wh=("energy_wh", total), avg_energy_wh=("energy_wh", "mean"),
                      avg_power_w=("avg_power_w", "mean"), avg_min_voltage=("min_voltage", "mean"),
-                     lowest_voltage=("min_voltage", "min"), brownouts=("brownouts", "sum"))
+                     lowest_voltage=("min_voltage", "min"), mid_match_disables=("enable_drops", total),
+                     brownouts=("brownouts", total))
                 .sort_values("first").drop(columns="first").round(2))
     st.dataframe(by_event, width="stretch")
 
@@ -238,16 +244,22 @@ with tab_volt:
     with c2:
         trend_chart(logs, {"Below low": "time_below_low_v", "Below critical": "time_below_crit_v"},
                     "Time below voltage thresholds", "seconds", fmt=".1f", zero=True)
-    b = logs[["n", "match", "brownouts"]].dropna()
-    if not b.empty:
+    for col, title in [("enable_drops", "Mid-match disables (robot disabled < 2 s, then re-enabled)"),
+                       ("brownouts", "Brownouts per match")]:
+        b = logs[["n", "match", col]].dropna()
+        if b.empty:
+            continue
         st.altair_chart(
             alt.Chart(b).mark_bar(color=SERIES[0], cornerRadiusEnd=4).encode(
                 x=alt.X("n:O", title="Match (in order played)", axis=alt.Axis(labelAngle=0)),
-                y=alt.Y("brownouts:Q", title="Brownouts", axis=alt.Axis(tickMinStep=1, format="d")),
-                tooltip=["match:N", "brownouts:Q"],
-            ).properties(height=180, title="Brownouts per match"),
+                y=alt.Y(f"{col}:Q", title="count", axis=alt.Axis(tickMinStep=1, format="d")),
+                tooltip=["match:N", alt.Tooltip(f"{col}:Q", title="count")],
+            ).properties(height=180, title=title),
             width="stretch",
         )
+        if col == "enable_drops":
+            st.caption("Usually a dropped connection or a power dip at the radio/roboRIO. "
+                       "Compare with the minimum-voltage chart above.")
 
 # ---------- Motors ----------
 with tab_motor:
@@ -264,23 +276,33 @@ with tab_motor:
             with st.expander("Trend table (all motors)", expanded=True):
                 st.dataframe(trend_frame(mtrends), hide_index=True, width="stretch")
 
-        all_motors = sorted(motors.motor.unique())
+        share = (motors.groupby("motor")["avg_supply"].mean().dropna().reset_index()
+                 .rename(columns={"avg_supply": "avg_supply_a"}))
+        if not share.empty:
+            bar_chart(share, "motor", "avg_supply_a", "Average supply current per motor, all selected matches",
+                      "A", fmt=".1f")
+            st.caption("Where the battery current goes. Supply current is what each motor pulls from the battery.")
+
+        order = [m for m in cfg.signal_map.motors if m in set(motors.motor)]
+        all_motors = order + sorted(set(motors.motor) - set(order))
         m1, m2 = st.columns([3, 1])
-        pick = m1.multiselect("Motors", all_motors, default=all_motors)
+        pick = m1.multiselect("Motors", all_motors, default=all_motors[:4])
         kind = m2.radio("Current", ["Average", "Peak"], horizontal=True)
         pre = "avg" if kind == "Average" else "peak"
         for m in pick:
             g = motors[motors.motor == m].sort_values("n")
             st.markdown(f"#### {m}")
-            c1, c2, c3 = st.columns([2, 1, 1])
+            has_temp = g["peak_temp"].notna().any()
+            c1, c2, *c3 = st.columns([2, 1, 1] if has_temp else [2, 1])
             with c1:
                 trend_chart(g, {"Supply": f"{pre}_supply", "Stator": f"{pre}_stator"},
                             f"{kind} current: supply vs stator", "A", fmt=".1f", zero=True)
             with c2:
                 trend_chart(g, {"Ratio": "stator_supply_ratio"}, "Stator ÷ supply", "ratio", fmt=".2f", zero=True)
-            with c3:
-                trend_chart(g, {"Peak temp": "peak_temp"}, "Peak temperature", "°C", fmt=".0f",
-                            rules=[(TH.hot_motor_c, f"hot {TH.hot_motor_c:g} °C")])
+            if has_temp:
+                with c3[0]:
+                    trend_chart(g, {"Peak temp": "peak_temp"}, "Peak temperature", "°C", fmt=".0f",
+                                rules=[(TH.hot_motor_c, f"hot {TH.hot_motor_c:g} °C")])
 
 # ---------- Batteries ----------
 with tab_batt:

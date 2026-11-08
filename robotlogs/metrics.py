@@ -7,6 +7,7 @@ and so on.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -83,6 +84,24 @@ class Window:
         s = signals.numeric.get(name) if name else None
         return s.sample(self.grid) if s is not None else None
 
+    def mean_of(self, signals: Signals, names: list[str]) -> np.ndarray | None:
+        """Average of several signals at each grid step (e.g. supply voltage seen by several motors)."""
+        arrs = [a for n in names if (a := self.get(signals, n)) is not None]
+        if not arrs:
+            return None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN columns -> NaN, that's fine
+            return np.nanmean(np.vstack(arrs), axis=0)
+
+
+DROP_MAX_S = 2.0  # a disable shorter than this, followed by re-enable, is a blip (comms/brownout)
+
+
+def count_enable_drops(intervals: list[tuple[float, float]]) -> int:
+    """How many times the robot was disabled for under DROP_MAX_S and then re-enabled.
+    The normal auto -> teleop gap is ~3 s, so it isn't counted."""
+    return sum(1 for (_, end), (start, _) in zip(intervals, intervals[1:]) if start - end < DROP_MAX_S)
+
 
 def match_window(signals: Signals, cfg: Config) -> Window:
     sm = cfg.signal_map
@@ -94,7 +113,8 @@ def match_window(signals: Signals, cfg: Config) -> Window:
 
 def compute_match_summary(signals: Signals, cfg: Config, win: Window) -> dict:
     sm, th = cfg.signal_map, cfg.thresholds
-    v = win.get(signals, sm.battery_voltage)
+    v_names = sm.battery_voltages()
+    v = win.mean_of(signals, v_names)
     i = win.get(signals, sm.total_current)
     if i is None:  # fall back to summing motor supply currents
         parts = [win.get(signals, m.supply) for m in sm.motors.values()]
@@ -103,10 +123,10 @@ def compute_match_summary(signals: Signals, cfg: Config, win: Window) -> dict:
 
     # Voltage just before the first enable ≈ resting voltage at the start of the match.
     start_v = None
-    vs = signals.numeric.get(sm.battery_voltage) if sm.battery_voltage else None
-    if vs is not None and win.intervals:
-        just_before = win.intervals[0][0] - 1e-3  # last sample strictly before enable, not under load
-        start_v = _nan_stat(lambda a: a[0], vs.sample(np.array([just_before])))
+    if v_names and win.intervals:
+        just_before = np.array([win.intervals[0][0] - 1e-3])  # last sample before enable, not under load
+        before = Window(just_before, win.dt, win.intervals).mean_of(signals, v_names)
+        start_v = _nan_stat(lambda a: a[0], before)
 
     energy_wh = sag = avg_power = peak_power = None
     if v is not None and i is not None:
@@ -122,6 +142,7 @@ def compute_match_summary(signals: Signals, cfg: Config, win: Window) -> dict:
 
     return {
         "enabled_s": float(win.grid.size * win.dt),
+        "enable_drops": count_enable_drops(win.intervals),
         "start_voltage": start_v,
         "min_voltage": _nan_stat(np.nanmin, v),
         "avg_voltage": _nan_stat(np.nanmean, v),
