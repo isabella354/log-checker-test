@@ -114,3 +114,104 @@ def test_wear_alert_fires(env):
         last = process_log(p, cfg, db)
     msgs = check_anomalies(db, last, cfg)
     assert any("rising" in m and "arm" in m for m in msgs), msgs
+
+
+def test_power_metrics(env):
+    cfg, db = env
+    p = cfg.local_log_dir / "m.wpilog"
+    write_match(p, sag=0.02)
+    row = db.log_row(process_log(p, cfg, db))
+    # avg power * enabled time == energy
+    assert row["avg_power_w"] * row["enabled_s"] / 3600 == pytest.approx(row["energy_wh"], rel=1e-6)
+    assert row["peak_power_w"] == pytest.approx(200 * (12.6 - 0.02 * 200), rel=0.01)
+
+
+def test_compute_trend():
+    from robotlogs.trends import compute_trend
+
+    assert compute_trend("x", "", [1, 2, 3], True) is None  # too few matches
+    rising = compute_trend("x", "", [10, 10, 11, 12, 13, 14, 15, 16], higher_is_worse=True)
+    assert rising.verdict == "worse" and rising.per_match > 0
+    assert compute_trend("v", "V", [12.5, 12.4, 12.0, 11.9], higher_is_worse=False).verdict == "steady"
+    assert compute_trend("v", "V", [12, 12, 10, 10], higher_is_worse=False).verdict == "worse"
+    assert compute_trend("b", "", [0, 0, 1, 2], higher_is_worse=True).verdict == "worse"  # from zero
+
+
+def test_old_database_gets_new_columns(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE logs (id INTEGER PRIMARY KEY, file_name TEXT, sha256 TEXT UNIQUE, "
+                 "ingested_at TEXT, started_at TEXT, energy_wh REAL)")
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    cols = {r[1] for r in db.conn.execute("PRAGMA table_info(logs)")}
+    assert {"avg_power_w", "peak_power_w", "sag_ohms"} <= cols
+
+
+def test_dashboard_renders(env, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    cfg, db = env
+    for k in range(8):
+        p = cfg.local_log_dir / f"m{k}.wpilog"
+        write_match(p, match_number=k + 1, epoch_s=1_760_000_000 + k * 600, arm_stator=40 + 2 * k)
+        process_log(p, cfg, db)
+    app = Path(__file__).resolve().parent.parent / "dashboard" / "app.py"
+    monkeypatch.setattr("sys.argv", ["app.py", "--config", str(cfg.db_path.parent / "config.yaml")])
+    at = AppTest.from_file(str(app), default_timeout=30).run()
+    assert not at.exception, at.exception
+    assert len(at.tabs) == 6
+    assert any("CASJ Q8" in m.value for m in at.subheader)
+
+
+def test_team_config_reads_advantagekit_log(tmp_path):
+    """Write a log shaped like Team3256's AdvantageKit output and ingest it with the real config.yaml."""
+    import shutil
+
+    repo = Path(__file__).resolve().parent.parent
+    shutil.copy(repo / "config.yaml", tmp_path / "config.yaml")
+    cfg = load_config(tmp_path / "config.yaml")
+    cfg.local_log_dir.mkdir()
+    db = Database(cfg.db_path)
+
+    p = cfg.local_log_dir / "akit_26-03-07_18-30-12_casj_q14.wpilog"
+    w = WpilogWriter(p)
+    w.append("/SystemStats/EpochTimeMicros", "int64", 0.5, 0)  # clock not valid yet
+    w.append("/SystemStats/EpochTimeMicros", "int64", 2.0, int(1_772_900_000 * 1e6))
+    w.append("/DriverStation/EventName", "string", 1.0, "CASJ")
+    w.append("/DriverStation/MatchType", "int64", 1.0, 2)
+    w.append("/DriverStation/MatchNumber", "int64", 1.0, 14)
+    w.append("/DriverStation/Enabled", "boolean", 0.0, False)
+    w.append("/DriverStation/Enabled", "boolean", 5.0, True)
+    w.append("/DriverStation/Enabled", "boolean", 25.0, False)
+    w.append("/SystemStats/BrownedOut", "boolean", 0.0, False)
+    for t in np.arange(0, 30, 0.02):
+        on = 5 <= t < 25
+        w.append("/SystemStats/BatteryVoltage", "double", t, 11.0 if on else 12.5)
+        w.append("/Shooter/ShooterMotorSupplyCurrents", "double[]", t, [20.0, 21.0, 22.0, 23.0] if on else [0.0] * 4)
+        w.append("/Shooter/ShooterMotorStatorCurrents", "double[]", t, [30.0, 31.0, 32.0, 33.0] if on else [0.0] * 4)
+        w.append("/Shooter/ShooterMotorTemperatures", "double[]", t, [40.0, 41.0, 42.0, 43.0])
+        w.append("/feeder/FeederMotorLeftSupplyCurrent", "double", t, 5.0 if on else 0.0)
+        w.append("/feeder/FeederMotorLeftStatorCurrent", "double", t, 15.0 if on else 0.0)
+        w.append("/LinearSlide/LeftMotorStatorCurrent", "double", t, 8.0 if on else 0.0)
+    w.close()
+
+    log_id = process_log(p, cfg, db)
+    row = db.log_row(log_id)
+    assert (row["event"], row["match_type"], row["match_number"]) == ("CASJ", "qualification", 14)
+    assert row["started_at"].startswith("2026-03-07")
+    assert row["enabled_s"] == pytest.approx(20.0, abs=0.05)
+    assert row["min_voltage"] == pytest.approx(11.0)
+    # no PowerDistribution logged -> total current = sum of tracked supply currents
+    assert row["avg_current"] == pytest.approx(20 + 21 + 22 + 23 + 5)
+
+    motors = {r["motor"]: r for r in db.conn.execute("SELECT * FROM motor_stats WHERE log_id=?", (log_id,))}
+    assert motors["shooter_3"]["avg_supply"] == pytest.approx(22.0)
+    assert motors["shooter_3"]["avg_stator"] == pytest.approx(32.0)
+    assert motors["shooter_4"]["peak_temp"] == pytest.approx(43.0)
+    assert motors["feeder_left"]["stator_supply_ratio"] == pytest.approx(3.0)
+    assert motors["slide_left"]["avg_stator"] == pytest.approx(8.0)
+    assert "indexer_left" not in motors  # not in this log -> skipped, not an error

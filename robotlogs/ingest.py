@@ -6,6 +6,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+
 from .config import Config
 from .db import Database
 from .metrics import compute_match_summary, compute_motor_stats, match_window
@@ -41,8 +43,10 @@ def _wall_clock_start(signals: Signals, cfg: Config, path: Path) -> str:
     """DataLogManager logs `systemTime` (µs since epoch) once the clock is valid.
     Back it out to the log's first timestamp; fall back to the file's mtime."""
     st = signals.numeric.get(cfg.signal_map.system_time) if cfg.signal_map.system_time else None
-    if st is not None and len(st.t):
-        epoch_s = st.v[0] / 1e6 - (st.t[0] - signals.start_s)
+    valid = st.v > 1e15 if st is not None else None  # ignore 0 / unset clock (µs before ~2001)
+    if st is not None and valid.any():
+        i = int(np.argmax(valid))
+        epoch_s = st.v[i] / 1e6 - (st.t[i] - signals.start_s)
     else:
         epoch_s = path.stat().st_mtime
     return datetime.fromtimestamp(epoch_s, timezone.utc).isoformat(timespec="seconds")

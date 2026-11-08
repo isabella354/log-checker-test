@@ -1,12 +1,18 @@
-# Copy to config.yaml and edit. Relative paths are resolved against this file's directory.
+# Team robotlogs config. Committed to git, so everyone who clones gets the same settings.
+# If you change it, commit and push so the rest of the team stays in sync.
+#
+# Set up for Team3256/FRC_Offseason_2026, which logs with AdvantageKit (WPILOGWriter).
+# Signal names below come from that code: Logger.processInputs("<Table>", inputs) logs each
+# input field as "/<Table>/<FieldName>" with the first letter capitalized.
+# If the robot code renames a subsystem or field, update the matching name here.
 
 team: 3256                   # used to build roboRIO addresses (USB, 10.TE.AM.2, mDNS)
 # robot_hosts: [172.22.11.2]   # optional: override the address list entirely
 ssh_user: lvuser
 ssh_password: ""
 remote_log_dirs:
-  - /home/lvuser/logs          # DataLogManager default; Phoenix 6 .hoot files often land here too
-  - /u/logs                    # USB stick, if you log there
+  - /U/wpilogs                 # Robot.java when Constants.Logging.kLogToUSB = true (current setting; needs a FAT32 USB stick)
+  - /home/lvuser/wpilogs       # Robot.java when kLogToUSB = false
 
 local_log_dir: ./logs          # downloaded raw logs (kept so you can re-run with a new signal_map)
 db_path: ./robot_trends.db
@@ -15,30 +21,88 @@ settle_s: 2.0                  # re-check file size after this long; a growing f
 sample_rate_hz: 50             # every signal is resampled onto this grid during the enabled window
 
 # CTRE owlet command used to convert .hoot -> .wpilog. {input}/{output} are substituted.
-# Check `owlet --help` for your version's exact flags; some signals need Phoenix Pro to export.
+# Not used right now: the folders above only contain AdvantageKit .wpilog files.
 owlet_cmd: ["owlet", "{input}", "{output}", "-f", "wpilog"]
 
-# Signal names come from YOUR robot code. Run `robotlogs signals <file.wpilog>` to list what's in a log.
+# ---------------------------------------------------------------------------
+# signal_map: a translation table from "what this tool wants" to "what our robot
+# code calls it in the log". The tool only reads the signals listed here.
+# A name that doesn't exist in the log just gives an empty metric, not an error.
+# To see the real names: robotlogs signals logs/<some file>.wpilog
+# "Name[2]" means element 2 of an array signal (used for the 4 shooter motors).
+# ---------------------------------------------------------------------------
 signal_map:
-  enabled: "DS:enabled"                       # from DriverStation.startDataLog()
-  system_time: "systemTime"                   # DataLogManager logs wall clock once it's valid
-  event_name: "NT:/FMSInfo/EventName"
-  match_type: "NT:/FMSInfo/MatchType"
-  match_number: "NT:/FMSInfo/MatchNumber"
-  battery_id: "NT:/SmartDashboard/BatteryID"  # e.g. a SendableChooser/string the drive team sets
+  # Logged automatically by AdvantageKit (LoggedDriverStation / LoggedSystemStats)
+  enabled: "/DriverStation/Enabled"
+  system_time: "/SystemStats/EpochTimeMicros"
+  event_name: "/DriverStation/EventName"
+  match_type: "/DriverStation/MatchType"
+  match_number: "/DriverStation/MatchNumber"
   battery_voltage: "/SystemStats/BatteryVoltage"
-  total_current: "/PowerDistribution/TotalCurrent"   # omit to sum the motor supply currents instead
-  brownout: "/SystemStats/BrownedOut"                # boolean; omit if you don't log it
-  motors:
-    arm_left:
-      supply: "/Arm/Left/SupplyCurrent"
-      stator: "/Arm/Left/StatorCurrent"
-      temp: "/Arm/Left/Temp"
-    drive_fl:
-      supply: "/Drive/FL/SupplyCurrent"
-      stator: "/Drive/FL/StatorCurrent"
-      temp: "/Drive/FL/Temp"
+  brownout: "/SystemStats/BrownedOut"
 
+  # Only exists once the robot code calls LoggedPowerDistribution.getInstance(...) before
+  # Logger.start(). Until then, total current = sum of the motor supply currents below
+  # (which leaves out the drivetrain, so power numbers will read low).
+  total_current: "/PowerDistribution/TotalCurrent"
+
+  # battery_id: not published by the robot code yet. To track batteries, publish a string
+  # (e.g. a dashboard dropdown) and put its log name here.
+
+  # One block per motor. Names on the left are what the dashboard shows.
+  # Drivetrain motors aren't logged through AdvantageKit, so they can't be listed here yet.
+  motors:
+    shooter_1:
+      supply: "/Shooter/ShooterMotorSupplyCurrents[0]"
+      stator: "/Shooter/ShooterMotorStatorCurrents[0]"
+      temp: "/Shooter/ShooterMotorTemperatures[0]"
+    shooter_2:
+      supply: "/Shooter/ShooterMotorSupplyCurrents[1]"
+      stator: "/Shooter/ShooterMotorStatorCurrents[1]"
+      temp: "/Shooter/ShooterMotorTemperatures[1]"
+    shooter_3:
+      supply: "/Shooter/ShooterMotorSupplyCurrents[2]"
+      stator: "/Shooter/ShooterMotorStatorCurrents[2]"
+      temp: "/Shooter/ShooterMotorTemperatures[2]"
+    shooter_4:
+      supply: "/Shooter/ShooterMotorSupplyCurrents[3]"
+      stator: "/Shooter/ShooterMotorStatorCurrents[3]"
+      temp: "/Shooter/ShooterMotorTemperatures[3]"
+    shooter_pivot:                 # no temperature logged
+      supply: "/ShooterPivot/ShooterPivotMotorSupplyCurrent"
+      stator: "/ShooterPivot/ShooterPivotMotorStatorCurrent"
+    feeder_left:
+      supply: "/feeder/FeederMotorLeftSupplyCurrent"
+      stator: "/feeder/FeederMotorLeftStatorCurrent"
+      temp: "/feeder/FeederMotorLeftTemperature"
+    feeder_right:
+      supply: "/feeder/FeederMotorRightSupplyCurrent"
+      stator: "/feeder/FeederMotorRightStatorCurrent"
+      temp: "/feeder/FeederMotorRightTemperature"
+    indexer_left:
+      supply: "/indexer/IndexerSupplyCurrentLeft"
+      stator: "/indexer/IndexerStatorCurrentLeft"
+      temp: "/indexer/IndexerTemperatureLeft"
+    indexer_right:
+      supply: "/indexer/IndexerSupplyCurrentRight"
+      stator: "/indexer/IndexerStatorCurrentRight"
+      temp: "/indexer/IndexerTemperatureRight"
+    intake_left:
+      supply: "/IntakeRollers/RollerSupplyCurrentLeft"
+      stator: "/IntakeRollers/RollerStatorCurrentLeft"
+      temp: "/IntakeRollers/RollerTemperatureLeft"
+    intake_right:
+      supply: "/IntakeRollers/RollerSupplyCurrentRight"
+      stator: "/IntakeRollers/RollerStatorCurrentRight"
+      temp: "/IntakeRollers/RollerTemperatureRight"
+    slide_left:                    # no temperature logged
+      supply: "/LinearSlide/LeftMotorSupplyCurrent"
+      stator: "/LinearSlide/LeftMotorStatorCurrent"
+    slide_right:
+      supply: "/LinearSlide/RightMotorSupplyCurrent"
+      stator: "/LinearSlide/RightMotorStatorCurrent"
+
+# Defaults are fine; tweak later if alerts are too noisy or too quiet.
 thresholds:
   low_voltage: 8.0
   critical_voltage: 7.0

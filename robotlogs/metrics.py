@@ -108,10 +108,14 @@ def compute_match_summary(signals: Signals, cfg: Config, win: Window) -> dict:
         just_before = win.intervals[0][0] - 1e-3  # last sample strictly before enable, not under load
         start_v = _nan_stat(lambda a: a[0], vs.sample(np.array([just_before])))
 
-    energy_wh = sag = None
+    energy_wh = sag = avg_power = peak_power = None
     if v is not None and i is not None:
         both = ~np.isnan(v) & ~np.isnan(i)
-        energy_wh = float(np.sum(v[both] * i[both]) * win.dt / 3600.0)
+        power = v[both] * i[both]  # watts, at each grid step
+        if power.size:
+            energy_wh = float(np.sum(power) * win.dt / 3600.0)
+            avg_power = float(np.mean(power))
+            peak_power = float(np.max(power))
         if np.count_nonzero(both) > 10 and np.ptp(i[both]) > 1.0:
             slope = np.polyfit(i[both], v[both], 1)[0]
             sag = float(-slope)  # volts lost per amp ≈ battery + wiring resistance (ohms)
@@ -127,6 +131,8 @@ def compute_match_summary(signals: Signals, cfg: Config, win: Window) -> dict:
         "peak_current": _nan_stat(np.nanmax, i),
         "avg_current": _nan_stat(np.nanmean, i),
         "energy_wh": energy_wh,
+        "avg_power_w": avg_power,
+        "peak_power_w": peak_power,
         "sag_ohms": sag,
     }
 

@@ -67,6 +67,23 @@ def cmd_alerts(args) -> None:
             print(f"    {m}")
 
 
+def cmd_trends(args) -> None:
+    from .trends import format_table, motor_trends, season_trends
+
+    cfg = load_config(args.config)
+    db = Database(cfg.db_path)
+    season = season_trends(db, args.event, args.type)
+    motors = motor_trends(db, args.event, args.type)
+    if not season and not motors:
+        print("Not enough matches yet (need at least 4 with data).")
+        return
+    print(f"Early = first {5} matches, Recent = last {5}. ▲ worse / ▼ better means it moved 5% or more.\n")
+    if season:
+        print("ROBOT\n" + format_table(season))
+    if motors:
+        print("\nMOTORS\n" + format_table(motors))
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="robotlogs")
     p.add_argument("-c", "--config", default="config.yaml")
@@ -91,6 +108,11 @@ def main() -> None:
     s = sub.add_parser("alerts", help="re-run anomaly checks on recent matches")
     s.add_argument("--last", type=int, default=10)
     s.set_defaults(func=cmd_alerts)
+
+    s = sub.add_parser("trends", help="is each metric getting better or worse over the season?")
+    s.add_argument("--event", help="only this event code, e.g. CASJ")
+    s.add_argument("--type", help="only this match type, e.g. qualification")
+    s.set_defaults(func=cmd_trends)
 
     args = p.parse_args()
     logging.basicConfig(

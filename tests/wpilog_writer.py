@@ -34,6 +34,7 @@ class WpilogWriter:
             "int64": lambda v: struct.pack("<q", v),
             "boolean": lambda v: struct.pack("<?", v),
             "string": lambda v: v.encode(),
+            "double[]": lambda v: struct.pack(f"<{len(v)}d", *v),
         }[typ](value)
         self._record(entry, ts_s, payload)
 

@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS logs (
   peak_current      REAL,
   avg_current       REAL,
   energy_wh         REAL,
+  avg_power_w       REAL,
+  peak_power_w      REAL,
   sag_ohms          REAL
 );
 
@@ -52,7 +54,8 @@ CREATE TABLE IF NOT EXISTS motor_stats (
 
 LOG_METRICS = [
     "enabled_s", "start_voltage", "min_voltage", "avg_voltage", "time_below_low_v",
-    "time_below_crit_v", "brownouts", "peak_current", "avg_current", "energy_wh", "sag_ohms",
+    "time_below_crit_v", "brownouts", "peak_current", "avg_current", "energy_wh",
+    "avg_power_w", "peak_power_w", "sag_ohms",
 ]
 MOTOR_METRICS = [
     "peak_supply", "avg_supply", "peak_stator", "avg_stator",
@@ -71,6 +74,17 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Databases created by an older version lack newer metric columns; add them
+        (old matches get NULL until re-ingested)."""
+        for table, cols in (("logs", LOG_METRICS), ("motor_stats", MOTOR_METRICS)):
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for col in cols:
+                if col not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} REAL")
+        self.conn.commit()
 
     # ---- dedupe ----
     def was_downloaded(self, name: str, size: int) -> bool:

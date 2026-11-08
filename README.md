@@ -13,7 +13,7 @@ git clone https://github.com/isabella354/log-checker-test.git
 cd log-checker-test
 python3 -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -e '.[dev,dashboard]'
+pip install -e ".[dev,dashboard]"
 robotlogs check                      # while connected to the robot
 ```
 
@@ -21,8 +21,19 @@ robotlogs check                      # while connected to the robot
 Re-run `source .venv/bin/activate` in each new terminal before using `robotlogs`.
 Converting `.hoot` files also needs CTRE's `owlet` CLI on your PATH (not a pip package).
 
-Robot code needs `DataLogManager.start()` and `DriverStation.startDataLog(DataLogManager.getLog())`
-so that `DS:enabled` and the `NT:/FMSInfo/*` entries end up in the log.
+`config.yaml` is set up for our robot code ([Team3256/FRC_Offseason_2026](https://github.com/Team3256/FRC_Offseason_2026)),
+which logs with AdvantageKit to `/U/wpilogs` on a USB stick in the roboRIO (`Constants.Logging.kLogToUSB = true`),
+or `/home/lvuser/wpilogs` if that flag is false. **No USB stick in the roboRIO = no logs.**
+
+### Robot-code changes that would make the numbers better
+
+1. **Log the PDH.** Add `LoggedPowerDistribution.getInstance(1, ModuleType.kRev);` in `Robot.configureAdvantageKit()`
+   before `Logger.start()`. Without it, "total current" and power only add up the motors listed in
+   `config.yaml`, which leaves out the drivetrain, usually the biggest draw.
+2. **Log drivetrain motor currents/temps** through AdvantageKit (right now the swerve modules only go to CTRE
+   SignalLogger `.hoot` files). Then add them under `motors:` in `config.yaml`.
+3. **Publish a battery ID** (e.g. a dashboard dropdown, logged with `Logger.recordOutput("BatteryID", ...)`) and
+   set `battery_id: "/RealOutputs/BatteryID"` in `config.yaml` to enable per-battery tracking.
 
 ## Map your signals
 
@@ -42,7 +53,8 @@ robotlogs check                 # what's on the robot, and why each file would/w
 robotlogs watch                 # poll for robot, pull, ingest, print alerts (Ctrl-C to stop)
 robotlogs ingest path/*.wpilog  # ingest files you already have
 robotlogs alerts --last 10      # re-run anomaly checks on recent matches
-streamlit run dashboard/app.py -- --db robot_trends.db
+robotlogs trends                # better/worse/steady for every metric (--event CASJ, --type qualification)
+streamlit run dashboard/app.py  # charts in the browser
 pytest
 ```
 
@@ -55,6 +67,8 @@ pytest
 | `metrics.py` | Resamples every signal onto a 50 Hz grid covering only the **enabled** time, then computes min/avg voltage, time below thresholds, brownouts, peak/avg current, energy (Wh), sag (V/A ≈ ohms), and per-motor supply/stator/ratio/temp. |
 | `db.py` | Stores data in SQLite tables `downloads`, `logs` (one row per match) and `motor_stats`. Re-ingest is deduped by SHA-256. |
 | `alerts.py` | Flags a value more than 2σ from the last 20 matches, and a motor's avg stator current trending up more than 2%/match. |
+| `trends.py` | For each metric, compares the first 5 matches with the last 5 and fits a line, labeling it ▲ worse / ▼ better / – steady (5% threshold). Shared by `robotlogs trends` and the dashboard. |
+| `dashboard/app.py` | Tabs: **Overview** (latest match vs. average, trend table, per-event totals), **Power** (energy, avg/peak power and current), **Battery voltage** (start/avg/min with thresholds, sag, time below threshold, brownouts), **Motors** (supply vs stator, ratio, temperature, per motor), **Batteries** (per-battery comparison), **Match detail**. |
 
 `logs/` doubles as an offline queue. Anything in it that hasn't been ingested (including files
 copied off a USB stick) is processed on the next `watch` cycle.
@@ -91,3 +105,110 @@ You don't have to start it at the right moment. It keeps polling in the backgrou
 The current log won't be pulled yet. The robot writes one log file per power-on, and the code skips any file that's still being written, so it won't grab the log for the session that's currently running. A match's log becomes available after the robot is power-cycled, which normally happens anyway when you swap batteries in the pits. So the usual flow is: play the match, return to the pits, swap the battery and power on, tether, and the previous match's log comes over.
 
 The simplest setup is to run it on the Driver Station laptop, since that laptop is already tethered to the robot whenever you're working on it in the pits.
+
+---
+
+## Running it at a competition (for whoever is on pit duty)
+
+Follow this top to bottom and you won't need to read anything above.
+
+### 1. Set up BEFORE the event, at home or school (needs internet)
+
+Event Wi-Fi is unreliable, so install everything ahead of time on the laptop you'll bring.
+The Driver Station laptop is the best choice, since it's already plugged into the robot in the pits.
+
+1. Check Python is installed. Open a terminal (Mac: Terminal app; Windows: PowerShell) and run
+   `python3 --version` (Windows: `python --version`). You need 3.10 or newer.
+   If it's missing or too old, install it from https://www.python.org/downloads/.
+2. Download the tool and install it:
+   ```sh
+   git clone https://github.com/isabella354/log-checker-test.git
+   cd log-checker-test
+   python3 -m venv .venv
+   source .venv/bin/activate            # Windows: .venv\Scripts\activate
+   pip install -e ".[dashboard]"
+   ```
+   If you already cloned it earlier, run `git pull` inside the folder instead of `git clone`,
+   to get the latest version and config.
+3. Test it. Connect the laptop to the robot (see step 2), turn the robot on, wait about
+   30 seconds for it to boot, then run:
+   ```sh
+   robotlogs check
+   ```
+   You want to see a line saying `Logged in to ...`, followed by a list of files. If you do, you're set.
+   You don't need to edit `config.yaml`; it's already set up for team 3256.
+
+### 2. Connecting to the robot
+
+Any of these works:
+- Ethernet cable from the laptop to the **robot radio** (most common in the pits)
+- USB cable from the laptop to the **roboRIO**
+- Wi-Fi to the robot radio (only at home; Wi-Fi to the robot is **not allowed** at events)
+
+### 3. At the event: start it once in the morning
+
+```sh
+cd log-checker-test
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+robotlogs watch
+```
+
+Leave that terminal window open all day. Don't close it, and don't let the laptop sleep
+(keep it plugged in with the lid open). On a Mac you can run `caffeinate -i robotlogs watch`
+instead to stop it sleeping. To stop the tool at the end of the day, press `Ctrl+C`.
+
+### 4. After every match
+
+You don't have to type anything. The normal pit routine does it:
+
+1. Robot comes back to the pits, the battery gets swapped, and the robot turns back on.
+2. Plug the laptop into the robot.
+3. Within about 10 seconds the terminal should print `found N log file(s) on robot, M new`,
+   then `downloading ...` and `ingested ...` for the match that just finished.
+
+**The log for the match that just finished only comes over after the robot has been turned off
+and back on.** While the robot is on, it's still writing to that file, so the tool waits.
+
+Lines starting with `⚠` are warnings, for example a battery that sagged more than usual or a motor
+running hotter than normal. Write them down or screenshot them and tell the drive team / mechanical.
+Warnings only start after about 5 matches, since they compare against earlier matches.
+
+### 5. Looking at the results (optional)
+
+Open a **second** terminal (leave `watch` running in the first one):
+
+```sh
+cd log-checker-test
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+streamlit run dashboard/app.py
+```
+
+A browser tab opens with charts. Each dot is one match and the line is the 5-match average,
+so you can see whether things are drifting. Hover over a chart for exact numbers.
+
+For a quick text summary instead:
+- `robotlogs trends`: is each metric getting better or worse? (▲ worse / ▼ better / – steady)
+- `robotlogs alerts --last 10`: warnings for the last 10 matches
+
+### 6. Troubleshooting
+
+| What you see | What it means / what to do |
+|---|---|
+| `robotlogs: command not found` | You forgot `source .venv/bin/activate` in this terminal. |
+| Nothing at all prints after `watching for robot at ...` | Robot isn't reachable. Check the cable, check the robot is on, wait 30 s after power-on for it to boot. |
+| `found 1 log file(s) on robot, 1 new` then `skipping ... (still being written)` | Normal. That's the current session. Power-cycle the robot and it'll come over. |
+| `found 0 log file(s)` | Is there a USB stick in the roboRIO? Our robot code saves logs to it. If there is, run `robotlogs check` and send the output to the programming lead. |
+| `SSH login ... failed` | Rare. Unplug and replug the cable, or power-cycle the robot. If it keeps happening, send the `robotlogs check` output to the programming lead. |
+| `ingested ...` but numbers in the dashboard are blank | The signal names in `config.yaml` don't match the robot code yet. Not an emergency: the raw logs are saved in `logs/`, and they can be re-processed later once the names are fixed. |
+| Error mentioning `owlet` | That's a `.hoot` (CTRE motor) file and the CTRE converter isn't installed. Safe to ignore; the `.wpilog` files still work. |
+
+### 7. After the event: hand the data back
+
+The match history (`robot_trends.db`) and the downloaded logs (`logs/` folder) are **not** in git,
+because they're big. They only exist on the laptop you used. So after the event:
+
+1. Zip the `logs/` folder and send it to the programming lead (Google Drive, USB stick, etc.).
+2. They copy the files into their own `logs/` folder and run `robotlogs ingest logs/*.wpilog`.
+   Matches already in their database are skipped automatically, so this is safe to run any time.
+
+Don't commit `logs/` or `robot_trends.db` to git. If you changed `config.yaml`, commit and push that.

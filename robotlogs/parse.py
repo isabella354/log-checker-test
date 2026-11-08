@@ -1,6 +1,7 @@
 """Read .wpilog files (and .hoot via owlet) into plain numpy series."""
 from __future__ import annotations
 
+import re
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -12,6 +13,8 @@ from wpiutil.log import DataLogReader
 from .metrics import Series
 
 _NUMERIC_TYPES = {"double", "float", "int64", "boolean"}
+_ARRAY_TYPES = {"double[]": "getDoubleArray", "float[]": "getFloatArray", "int64[]": "getIntegerArray"}
+_INDEXED = re.compile(r"^(.*)\[(\d+)\]$")  # "/Shooter/ShooterMotorStatorCurrents[2]"
 
 
 @dataclass
@@ -52,7 +55,16 @@ def _open(path: Path) -> DataLogReader:
 
 
 def read_wpilog(path: Path, wanted: set[str] | None = None) -> Signals:
-    """Read numeric and string entries. Pass `wanted` to skip everything else (much faster)."""
+    """Read numeric and string entries. Pass `wanted` to skip everything else (much faster).
+
+    A wanted name like "/Shooter/ShooterMotorStatorCurrents[2]" picks element 2 out of an
+    array entry (AdvantageKit logs `double[]` input fields this way) and stores it under that name.
+    """
+    # array base name -> [(index, wanted name)]
+    indexed: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for w in wanted or ():
+        if m := _INDEXED.match(w):
+            indexed[m.group(1)].append((int(m.group(2)), w))
     entries: dict[int, tuple[str, str]] = {}
     nums: dict[str, tuple[list, list]] = defaultdict(lambda: ([], []))
     strs: dict[str, list] = defaultdict(list)
@@ -72,6 +84,17 @@ def read_wpilog(path: Path, wanted: set[str] | None = None) -> Signals:
         t_min, t_max = min(t_min, ts), max(t_max, ts)
 
         name, typ = entry
+        if typ in _ARRAY_TYPES and name in indexed:
+            try:
+                arr = getattr(rec, _ARRAY_TYPES[typ])()
+            except Exception:
+                continue
+            for idx, wname in indexed[name]:
+                if idx < len(arr):
+                    ts_list, v_list = nums[wname]
+                    ts_list.append(ts)
+                    v_list.append(float(arr[idx]))
+            continue
         if wanted is not None and name not in wanted:
             continue
         if typ not in _NUMERIC_TYPES and typ != "string":
